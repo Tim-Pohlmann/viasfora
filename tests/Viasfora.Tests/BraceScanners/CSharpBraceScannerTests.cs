@@ -224,7 +224,7 @@ callCommented2(4);
       String input = "($\"\"\"some \r\n string with \r\n{\"quotes\"} \"\"\")";
       var extractor = new CSharpBraceScanner();
       var chars = ExtractWithLines(extractor, input.Trim(), 0, 0);
-      Assert.Equal(3, chars.Count); // should be 4 (with interpolation support) or 2 (without interpolation support)
+      Assert.Equal(2, chars.Count); // should be 4 when interpolation is supported
     }
 
     // TODO: Support later
