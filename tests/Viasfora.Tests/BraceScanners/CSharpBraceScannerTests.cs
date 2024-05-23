@@ -218,6 +218,15 @@ callCommented2(4);
       var chars = ExtractWithLines(extractor, input.Trim(), 0, 0);
       Assert.Equal(0, chars.Count);
     }
+
+    [Fact]
+    public void RawString2() {
+      String input = "($\"\"\"some \r\n string with \r\n{\"quotes\"} \"\"\")";
+      var extractor = new CSharpBraceScanner();
+      var chars = ExtractWithLines(extractor, input.Trim(), 0, 0);
+      Assert.Equal(3, chars.Count); // should be 4 (with interpolation support) or 2 (without interpolation support)
+    }
+
     // TODO: Support later
     /*
     [Fact]
