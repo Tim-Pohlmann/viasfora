@@ -12,13 +12,13 @@ namespace Winterdom.Viasfora.Languages.BraceScanners {
     const int stMultiLineComment = 4;
     const int stIString = 5;
 
+    const int VerbatimFlag = 0x04000000;
+    const int ParsingExpressionFlag = 0x08000000;
+
     private int status = stText;
-    private int nestingLevel = 0;
-    private Stack<int> nestingLevelStack = new Stack<int>();
-    private int istringNestLevel = 0;
-    private bool parsingExpression = false;
     private bool multiLine = false;
     private int rawStringQuotes = 0;
+    private readonly Stack<InterpolatedString> istrings = new Stack<InterpolatedString>();
 
     public String BraceList => "(){}[]";
 
@@ -27,11 +27,17 @@ namespace Winterdom.Viasfora.Languages.BraceScanners {
 
     public void Reset(int state) {
       this.status = state & 0xFF;
-      this.parsingExpression = (state & 0x08000000) != 0;
-      this.nestingLevel = (state & 0xFF0000) >> 24;
-      this.multiLine = (state & 0x04000000) != 0;
-      this.istringNestLevel = (state & 0xFF00) >> 16; 
+      this.multiLine = false;
       this.rawStringQuotes = 0;
+      this.istrings.Clear();
+      // only the innermost interpolated string can be restored
+      if ( this.status == stIString ) {
+        this.istrings.Push(new InterpolatedString {
+          NestingLevel = (state >> 8) & 0xFF,
+          Verbatim = (state & VerbatimFlag) != 0,
+          ParsingExpression = (state & ParsingExpressionFlag) != 0
+        });
+      }
     }
 
     public bool CanResume(CharPos brace) {
@@ -79,25 +85,10 @@ namespace Winterdom.Viasfora.Languages.BraceScanners {
           this.multiLine = true;
           tc.Skip(2);
           this.ParseMultiLineString(tc);
-        } else if ( tc.Char() == '$' && tc.NChar() == '"' ) {
-          // Roslyn interpolated string
-          this.parsingExpression = false;
-          this.status = stIString;
-          tc.Skip(2);
-          this.istringNestLevel++;
-          this.nestingLevelStack.Push(this.nestingLevel);
-          return this.ParseInterpolatedString(tc, ref pos);
-        } else if ( tc.Char() == '$' && tc.NChar() == '@' && tc.NNChar() == '"' ) {
-          this.status = stIString;
-          this.multiLine = true;
-          this.parsingExpression = false;
-          tc.Skip(3);
-          this.istringNestLevel++;
-          this.nestingLevelStack.Push(this.nestingLevel);
+        } else if ( TryStartInterpolatedString(tc) ) {
           return this.ParseInterpolatedString(tc, ref pos);
         } else if ( tc.Char() == '"' && tc.NChar() == '"' && tc.NNChar() == '"' ) {
           this.status = stString;
-          this.parsingExpression = false;
           this.rawStringQuotes = SkipQuotes(tc);
           this.ParseRawString(tc);
         } else if ( tc.Char() == '"' ) {
@@ -200,27 +191,39 @@ namespace Winterdom.Viasfora.Languages.BraceScanners {
         }
       }
     }
+
+    // Consumes the opening delimiter and returns true
+    // if tc is at the start of an interpolated string
+    private bool TryStartInterpolatedString(ITextChars tc) {
+      if ( tc.Char() != '$' )
+        return false;
+      var istring = new InterpolatedString();
+      if ( tc.NChar() == '"' ) {
+        tc.Skip(2);
+      } else if ( tc.NChar() == '@' && tc.NNChar() == '"' ) {
+        istring.Verbatim = true;
+        tc.Skip(3);
+      } else {
+        return false;
+      }
+      this.istrings.Push(istring);
+      this.status = stIString;
+      return true;
+    }
+
     // C# 6.0 interpolated string support:
     // this is a hack. It will not handle all possible expressions
     // but will handle most basic stuff
     private bool ParseInterpolatedString(ITextChars tc, ref CharPos pos) {
       while ( !tc.AtEnd ) {
-        if ( this.parsingExpression ) {
+        var istring = this.istrings.Peek();
+        if ( istring.ParsingExpression ) {
           //
           // we're inside an interpolated section
           //
-          if ( tc.Char() == '$' && tc.NChar() == '"' ) {
+          if ( TryStartInterpolatedString(tc) ) {
             // opening nested interpolated string
-            tc.Skip(2);
-            this.parsingExpression = false;
-            this.istringNestLevel++;
-            this.nestingLevelStack.Push(this.nestingLevel);
-            this.nestingLevel = 0;
-            if ( this.ParseInterpolatedString(tc, ref pos) )
-              return true;
-            this.istringNestLevel--;
-            this.parsingExpression = true;
-            this.status = stIString;
+            continue;
           } else if ( tc.Char() == '@' && tc.NChar() == '"' ) {
             // opening nested verbatim string
             tc.Skip(2);
@@ -237,9 +240,9 @@ namespace Winterdom.Viasfora.Languages.BraceScanners {
             this.status = stIString;
           } else if ( tc.Char() == '}' ) {
             // reached the end
-            this.nestingLevel--;
-            if ( this.nestingLevel == 0 ) {
-              this.parsingExpression = false;
+            istring.NestingLevel--;
+            if ( istring.NestingLevel == 0 ) {
+              istring.ParsingExpression = false;
             }
             pos = new CharPos(tc.Char(), tc.AbsolutePosition, EncodedState());
             tc.Next();
@@ -247,7 +250,7 @@ namespace Winterdom.Viasfora.Languages.BraceScanners {
           } else if ( BraceList.Contains(tc.Char()) ) {
             pos = new CharPos(tc.Char(), tc.AbsolutePosition, EncodedState());
             if ( tc.Char() == '{' )
-              this.nestingLevel++;
+              istring.NestingLevel++;
             tc.Next();
             return true;
           } else {
@@ -258,34 +261,27 @@ namespace Winterdom.Viasfora.Languages.BraceScanners {
           // parsing the string part
           // if it's an at-string, don't look for escape sequences
           //
-          if ( tc.Char() == '\\' && !this.multiLine ) {
+          if ( tc.Char() == '\\' && !istring.Verbatim ) {
             // skip over escape sequences
             tc.Skip(2);
           } else if ( tc.Char() == '{' && tc.NChar() == '{' ) {
             tc.Skip(2);
           } else if ( tc.Char() == '{' ) {
-            this.parsingExpression = true;
-            this.nestingLevel++;
+            istring.ParsingExpression = true;
+            istring.NestingLevel++;
             pos = new CharPos(tc.Char(), tc.AbsolutePosition, EncodedState());
             tc.Next();
             return true;
-          } else if ( this.multiLine && tc.Char() == '"' && tc.NChar() == '"' ) {
+          } else if ( istring.Verbatim && tc.Char() == '"' && tc.NChar() == '"' ) {
             // single embedded double quote
             tc.Skip(2);
           } else if ( tc.Char() == '"' ) {
             // done parsing the interpolated string
-            this.multiLine = false;
-            this.istringNestLevel--;
-            this.nestingLevel = this.nestingLevelStack.Pop();
-            if (this.istringNestLevel <= 0) {
-              this.istringNestLevel = 0;
+            tc.Next();
+            this.istrings.Pop();
+            if ( this.istrings.Count == 0 ) {
               this.status = stText;
-              tc.Next();
               break;
-            } else {
-              this.status = stIString;
-              this.parsingExpression = true;
-              tc.Next();
             }
           } else {
             tc.Next();
@@ -297,13 +293,21 @@ namespace Winterdom.Viasfora.Languages.BraceScanners {
 
     private int EncodedState() {
       int encoded = this.status;
-      if ( this.parsingExpression )
-        encoded |= 0x08000000;
-      if ( this.multiLine )
-        encoded |= 0x04000000;
-      encoded |= (this.nestingLevel & 0xFF) << 24;
-      encoded |= (this.istringNestLevel & 0xFF) << 16;
+      if ( this.istrings.Count > 0 ) {
+        var istring = this.istrings.Peek();
+        encoded |= Math.Min(istring.NestingLevel, 0xFF) << 8;
+        if ( istring.Verbatim )
+          encoded |= VerbatimFlag;
+        if ( istring.ParsingExpression )
+          encoded |= ParsingExpressionFlag;
+      }
       return encoded;
+    }
+
+    private sealed class InterpolatedString {
+      public bool Verbatim { get; set; }
+      public int NestingLevel { get; set; }
+      public bool ParsingExpression { get; set; }
     }
   }
 }

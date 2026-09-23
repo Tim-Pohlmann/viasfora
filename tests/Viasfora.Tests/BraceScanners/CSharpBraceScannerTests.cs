@@ -1,4 +1,5 @@
 ﻿using System;
+using System.Linq;
 using Winterdom.Viasfora.Languages.BraceScanners;
 using Xunit;
 
@@ -197,6 +198,23 @@ callCommented2(4);
       var extractor = new CSharpBraceScanner();
       var chars = ExtractWithLines(extractor, input.Trim(), 0, 0);
       Assert.Equal(0, chars.Count);
+    }
+
+    [Fact]
+    public void InterpolatedAtStringStaysVerbatimAfterNestedInterpolatedString() {
+      String input = "$@\"{$\"{a}\"}\\{b}\"";
+      var extractor = new CSharpBraceScanner();
+      var chars = Extract(extractor, input, 0, 0);
+      Assert.Equal("{{}}{}", Braces(chars));
+    }
+    [Fact]
+    public void InterpolatedStringCanResumeFromBraceInExpression() {
+      var extractor = new CSharpBraceScanner();
+      var chars = Extract(extractor, "$\"{ a(", 0, 0);
+      Assert.Equal("{(", Braces(chars));
+      extractor.Reset(chars.Last().State);
+      chars = Extract(extractor, "b) }\" (x)", 0, 0, false);
+      Assert.Equal(")}()", Braces(chars));
     }
 
     [Fact]
