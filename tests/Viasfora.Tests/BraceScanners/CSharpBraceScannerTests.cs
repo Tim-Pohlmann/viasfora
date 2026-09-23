@@ -320,7 +320,25 @@ callCommented2(4);
       var extractor = new CSharpBraceScanner();
       var chars = Extract(extractor, input, 0, 0);
       Assert.Equal("{}", Braces(chars));
-      Assert.Equal(new[] { 8, 12 }, chars.Select(c => c.Position));
+      Assert.Equal(new[] { 7, 12 }, chars.Select(c => c.Position));
+      Assert.Equal(new[] { 2, 2 }, chars.Select(c => c.Length));
+    }
+    [Fact]
+    public void InterpolatedRawStringDelimitersSpanAllTheirBraces() {
+      String input = "$$$\"\"\"{{{a}}}\"\"\"";
+      var extractor = new CSharpBraceScanner();
+      var chars = Extract(extractor, input, 0, 0);
+      Assert.Equal("{}", Braces(chars));
+      Assert.Equal(new[] { 6, 10 }, chars.Select(c => c.Position));
+      Assert.Equal(new[] { 3, 3 }, chars.Select(c => c.Length));
+    }
+    [Fact]
+    public void BracesInInterpolatedRawStringExpressionAreSingleCharacters() {
+      String input = "$$\"\"\"{{ a(b) }}\"\"\"";
+      var extractor = new CSharpBraceScanner();
+      var chars = Extract(extractor, input, 0, 0);
+      Assert.Equal("{()}", Braces(chars));
+      Assert.Equal(new[] { 2, 1, 1, 2 }, chars.Select(c => c.Length));
     }
     [Fact]
     public void InterpolatedRawStringWithBracesInExpression() {

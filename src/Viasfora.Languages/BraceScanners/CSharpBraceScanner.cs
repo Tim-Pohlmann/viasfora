@@ -283,15 +283,17 @@ namespace Winterdom.Viasfora.Languages.BraceScanners {
       int position = tc.AbsolutePosition;
       // raw strings close the interpolation with one brace per '$'
       int closingBraces = istring.NestingLevel == 1 && istring.IsRaw ? istring.Dollars : 1;
-      for ( int i = 0; i < closingBraces && tc.Char() == '}'; i++ ) {
+      int length = 0;
+      while ( length < closingBraces && tc.Char() == '}' ) {
         tc.Next();
+        length++;
       }
       istring.NestingLevel--;
       if ( istring.NestingLevel == 0 ) {
         // reached the end
         istring.ParsingExpression = false;
       }
-      return new CharPos('}', position, EncodedState());
+      return new CharPos('}', position, EncodedState(), length);
     }
 
     // parsing the string part
@@ -333,7 +335,7 @@ namespace Winterdom.Viasfora.Languages.BraceScanners {
         if ( SkipAll(tc, '{') >= istring.Dollars ) {
           istring.ParsingExpression = true;
           istring.NestingLevel++;
-          pos = new CharPos('{', tc.AbsolutePosition - 1, EncodedState());
+          pos = new CharPos('{', tc.AbsolutePosition - istring.Dollars, EncodedState(), istring.Dollars);
           return true;
         }
       } else {
