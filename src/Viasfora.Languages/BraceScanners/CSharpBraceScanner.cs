@@ -215,78 +215,82 @@ namespace Winterdom.Viasfora.Languages.BraceScanners {
     // this is a hack. It will not handle all possible expressions
     // but will handle most basic stuff
     private bool ParseInterpolatedString(ITextChars tc, ref CharPos pos) {
-      while ( !tc.AtEnd ) {
+      while ( !tc.AtEnd && this.status == stIString ) {
         var istring = this.istrings.Peek();
-        if ( istring.ParsingExpression ) {
-          //
-          // we're inside an interpolated section
-          //
-          if ( TryStartInterpolatedString(tc) ) {
-            // opening nested interpolated string
-            continue;
-          } else if ( tc.Char() == '@' && tc.NChar() == '"' ) {
-            // opening nested verbatim string
-            tc.Skip(2);
-            this.ParseMultiLineString(tc);
-            this.status = stIString;
-          } else if ( tc.Char() == '"' ) {
-            // opening string
-            tc.Next();
-            this.ParseString(tc);
-            this.status = stIString;
-          } else if ( tc.Char() == '\'' ) {
-            tc.Next();
-            ParseCharLiteral(tc);
-            this.status = stIString;
-          } else if ( tc.Char() == '}' ) {
-            // reached the end
-            istring.NestingLevel--;
-            if ( istring.NestingLevel == 0 ) {
-              istring.ParsingExpression = false;
-            }
-            pos = new CharPos(tc.Char(), tc.AbsolutePosition, EncodedState());
-            tc.Next();
-            return true;
-          } else if ( BraceList.Contains(tc.Char()) ) {
-            pos = new CharPos(tc.Char(), tc.AbsolutePosition, EncodedState());
-            if ( tc.Char() == '{' )
-              istring.NestingLevel++;
-            tc.Next();
-            return true;
-          } else {
-            tc.Next();
-          }
-        } else {
-          //
-          // parsing the string part
-          // if it's an at-string, don't look for escape sequences
-          //
-          if ( tc.Char() == '\\' && !istring.Verbatim ) {
-            // skip over escape sequences
-            tc.Skip(2);
-          } else if ( tc.Char() == '{' && tc.NChar() == '{' ) {
-            tc.Skip(2);
-          } else if ( tc.Char() == '{' ) {
-            istring.ParsingExpression = true;
-            istring.NestingLevel++;
-            pos = new CharPos(tc.Char(), tc.AbsolutePosition, EncodedState());
-            tc.Next();
-            return true;
-          } else if ( istring.Verbatim && tc.Char() == '"' && tc.NChar() == '"' ) {
-            // single embedded double quote
-            tc.Skip(2);
-          } else if ( tc.Char() == '"' ) {
-            // done parsing the interpolated string
-            tc.Next();
-            this.istrings.Pop();
-            if ( this.istrings.Count == 0 ) {
-              this.status = stText;
-              break;
-            }
-          } else {
-            tc.Next();
-          }
+        bool found = istring.ParsingExpression
+          ? ParseInterpolationExpression(tc, istring, ref pos)
+          : ParseInterpolatedStringText(tc, istring, ref pos);
+        if ( found )
+          return true;
+      }
+      return false;
+    }
+
+    // we're inside an interpolated section
+    private bool ParseInterpolationExpression(ITextChars tc, InterpolatedString istring, ref CharPos pos) {
+      if ( TryStartInterpolatedString(tc) ) {
+        // opening nested interpolated string
+      } else if ( tc.Char() == '@' && tc.NChar() == '"' ) {
+        // opening nested verbatim string
+        tc.Skip(2);
+        this.ParseMultiLineString(tc);
+        this.status = stIString;
+      } else if ( tc.Char() == '"' ) {
+        // opening string
+        tc.Next();
+        this.ParseString(tc);
+        this.status = stIString;
+      } else if ( tc.Char() == '\'' ) {
+        tc.Next();
+        ParseCharLiteral(tc);
+        this.status = stIString;
+      } else if ( tc.Char() == '}' ) {
+        // reached the end
+        istring.NestingLevel--;
+        if ( istring.NestingLevel == 0 ) {
+          istring.ParsingExpression = false;
         }
+        pos = new CharPos(tc.Char(), tc.AbsolutePosition, EncodedState());
+        tc.Next();
+        return true;
+      } else if ( BraceList.Contains(tc.Char()) ) {
+        pos = new CharPos(tc.Char(), tc.AbsolutePosition, EncodedState());
+        if ( tc.Char() == '{' )
+          istring.NestingLevel++;
+        tc.Next();
+        return true;
+      } else {
+        tc.Next();
+      }
+      return false;
+    }
+
+    // parsing the string part
+    // if it's an at-string, don't look for escape sequences
+    private bool ParseInterpolatedStringText(ITextChars tc, InterpolatedString istring, ref CharPos pos) {
+      if ( tc.Char() == '\\' && !istring.Verbatim ) {
+        // skip over escape sequences
+        tc.Skip(2);
+      } else if ( tc.Char() == '{' && tc.NChar() == '{' ) {
+        tc.Skip(2);
+      } else if ( tc.Char() == '{' ) {
+        istring.ParsingExpression = true;
+        istring.NestingLevel++;
+        pos = new CharPos(tc.Char(), tc.AbsolutePosition, EncodedState());
+        tc.Next();
+        return true;
+      } else if ( istring.Verbatim && tc.Char() == '"' && tc.NChar() == '"' ) {
+        // single embedded double quote
+        tc.Skip(2);
+      } else if ( tc.Char() == '"' ) {
+        // done parsing the interpolated string
+        tc.Next();
+        this.istrings.Pop();
+        if ( this.istrings.Count == 0 ) {
+          this.status = stText;
+        }
+      } else {
+        tc.Next();
       }
       return false;
     }
