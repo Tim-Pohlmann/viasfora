@@ -12,6 +12,9 @@ namespace Winterdom.Viasfora.Languages.BraceScanners {
     const int stMultiLineComment = 4;
     const int stIString = 5;
 
+    const int RawQuotesShift = 16;
+    const int DollarsShift = 21;
+    const int MaxEncodedCount = 0x1F;
     const int VerbatimFlag = 0x04000000;
     const int ParsingExpressionFlag = 0x08000000;
 
@@ -34,6 +37,8 @@ namespace Winterdom.Viasfora.Languages.BraceScanners {
       if ( this.status == stIString ) {
         this.istrings.Push(new InterpolatedString {
           NestingLevel = (state >> 8) & 0xFF,
+          RawQuotes = (state >> RawQuotesShift) & MaxEncodedCount,
+          Dollars = (state >> DollarsShift) & MaxEncodedCount,
           Verbatim = (state & VerbatimFlag) != 0,
           ParsingExpression = (state & ParsingExpressionFlag) != 0
         });
@@ -157,8 +162,12 @@ namespace Winterdom.Viasfora.Languages.BraceScanners {
     }
 
     private static int SkipQuotes(ITextChars tc) {
+      return SkipAll(tc, '"');
+    }
+
+    private static int SkipAll(ITextChars tc, char ch) {
       int count = 0;
-      while ( !tc.AtEnd && tc.Char() == '"' ) {
+      while ( !tc.AtEnd && tc.Char() == ch ) {
         tc.Next();
         count++;
       }
@@ -197,15 +206,21 @@ namespace Winterdom.Viasfora.Languages.BraceScanners {
     private bool TryStartInterpolatedString(ITextChars tc) {
       if ( tc.Char() != '$' )
         return false;
-      var istring = new InterpolatedString();
-      if ( tc.NChar() == '"' ) {
-        tc.Skip(2);
-      } else if ( tc.NChar() == '@' && tc.NNChar() == '"' ) {
+      tc.Mark();
+      var istring = new InterpolatedString { Dollars = SkipAll(tc, '$') };
+      if ( tc.Char() == '"' && tc.NChar() == '"' && tc.NNChar() == '"' ) {
+        // C# 11 interpolated raw string
+        istring.RawQuotes = SkipQuotes(tc);
+      } else if ( istring.Dollars == 1 && tc.Char() == '"' ) {
+        tc.Next();
+      } else if ( istring.Dollars == 1 && tc.Char() == '@' && tc.NChar() == '"' ) {
         istring.Verbatim = true;
-        tc.Skip(3);
+        tc.Skip(2);
       } else {
+        tc.BackToMark();
         return false;
       }
+      tc.ClearMark();
       this.istrings.Push(istring);
       this.status = stIString;
       return true;
@@ -217,9 +232,14 @@ namespace Winterdom.Viasfora.Languages.BraceScanners {
     private bool ParseInterpolatedString(ITextChars tc, ref CharPos pos) {
       while ( !tc.AtEnd && this.status == stIString ) {
         var istring = this.istrings.Peek();
-        bool found = istring.ParsingExpression
-          ? ParseInterpolationExpression(tc, istring, ref pos)
-          : ParseInterpolatedStringText(tc, istring, ref pos);
+        bool found;
+        if ( istring.ParsingExpression ) {
+          found = ParseInterpolationExpression(tc, istring, ref pos);
+        } else if ( istring.IsRaw ) {
+          found = ParseInterpolatedRawStringText(tc, istring, ref pos);
+        } else {
+          found = ParseInterpolatedStringText(tc, istring, ref pos);
+        }
         if ( found )
           return true;
       }
@@ -245,13 +265,7 @@ namespace Winterdom.Viasfora.Languages.BraceScanners {
         ParseCharLiteral(tc);
         this.status = stIString;
       } else if ( tc.Char() == '}' ) {
-        // reached the end
-        istring.NestingLevel--;
-        if ( istring.NestingLevel == 0 ) {
-          istring.ParsingExpression = false;
-        }
-        pos = new CharPos(tc.Char(), tc.AbsolutePosition, EncodedState());
-        tc.Next();
+        pos = ParseClosingBrace(tc, istring);
         return true;
       } else if ( BraceList.Contains(tc.Char()) ) {
         pos = new CharPos(tc.Char(), tc.AbsolutePosition, EncodedState());
@@ -263,6 +277,21 @@ namespace Winterdom.Viasfora.Languages.BraceScanners {
         tc.Next();
       }
       return false;
+    }
+
+    private CharPos ParseClosingBrace(ITextChars tc, InterpolatedString istring) {
+      int position = tc.AbsolutePosition;
+      // raw strings close the interpolation with one brace per '$'
+      int closingBraces = istring.NestingLevel == 1 && istring.IsRaw ? istring.Dollars : 1;
+      for ( int i = 0; i < closingBraces && tc.Char() == '}'; i++ ) {
+        tc.Next();
+      }
+      istring.NestingLevel--;
+      if ( istring.NestingLevel == 0 ) {
+        // reached the end
+        istring.ParsingExpression = false;
+      }
+      return new CharPos('}', position, EncodedState());
     }
 
     // parsing the string part
@@ -285,9 +314,27 @@ namespace Winterdom.Viasfora.Languages.BraceScanners {
       } else if ( tc.Char() == '"' ) {
         // done parsing the interpolated string
         tc.Next();
-        this.istrings.Pop();
-        if ( this.istrings.Count == 0 ) {
-          this.status = stText;
+        EndInterpolatedString();
+      } else {
+        tc.Next();
+      }
+      return false;
+    }
+
+    // C# 11 interpolated raw string: there are no escapes,
+    // and an interpolation starts with one brace per '$'.
+    // Longer brace runs are content followed by the interpolation.
+    private bool ParseInterpolatedRawStringText(ITextChars tc, InterpolatedString istring, ref CharPos pos) {
+      if ( tc.Char() == '"' ) {
+        if ( SkipQuotes(tc) >= istring.RawQuotes ) {
+          EndInterpolatedString();
+        }
+      } else if ( tc.Char() == '{' ) {
+        if ( SkipAll(tc, '{') >= istring.Dollars ) {
+          istring.ParsingExpression = true;
+          istring.NestingLevel++;
+          pos = new CharPos('{', tc.AbsolutePosition - 1, EncodedState());
+          return true;
         }
       } else {
         tc.Next();
@@ -295,11 +342,20 @@ namespace Winterdom.Viasfora.Languages.BraceScanners {
       return false;
     }
 
+    private void EndInterpolatedString() {
+      this.istrings.Pop();
+      if ( this.istrings.Count == 0 ) {
+        this.status = stText;
+      }
+    }
+
     private int EncodedState() {
       int encoded = this.status;
       if ( this.istrings.Count > 0 ) {
         var istring = this.istrings.Peek();
         encoded |= Math.Min(istring.NestingLevel, 0xFF) << 8;
+        encoded |= Math.Min(istring.RawQuotes, MaxEncodedCount) << RawQuotesShift;
+        encoded |= Math.Min(istring.Dollars, MaxEncodedCount) << DollarsShift;
         if ( istring.Verbatim )
           encoded |= VerbatimFlag;
         if ( istring.ParsingExpression )
@@ -310,8 +366,12 @@ namespace Winterdom.Viasfora.Languages.BraceScanners {
 
     private sealed class InterpolatedString {
       public bool Verbatim { get; set; }
+      public int Dollars { get; set; }
+      // number of quotes delimiting a raw string, 0 otherwise
+      public int RawQuotes { get; set; }
       public int NestingLevel { get; set; }
       public bool ParsingExpression { get; set; }
+      public bool IsRaw => RawQuotes > 0;
     }
   }
 }
